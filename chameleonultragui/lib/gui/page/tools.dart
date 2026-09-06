@@ -3,6 +3,8 @@ import 'package:chameleonultragui/gui/menu/tools/dictionary_download.dart';
 import 'package:chameleonultragui/gui/menu/tools/hf_sniffing.dart';
 import 'package:chameleonultragui/gui/menu/tools/lf_sniffing.dart';
 import 'package:chameleonultragui/gui/menu/tools/t55xx_password_cleaner.dart';
+import 'package:chameleonultragui/gui/menu/tools/wiegand_decoder.dart';
+import 'package:chameleonultragui/gui/menu/tools/access_condition_calculator.dart';
 import 'package:chameleonultragui/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
@@ -67,6 +69,18 @@ class ToolsPageState extends State<ToolsPage> {
           description: localizations.mifare_classic_gen4_description,
           icon: Icons.settings,
           isDeviceRequired: true),
+      ToolItem(
+          name: 'Wiegand Access Control Decoder',
+          description:
+              'Decode & format 26/34/37-bit access control card payloads, Facility Codes & Card Numbers.',
+          icon: Icons.credit_card,
+          onPressed: const WiegandDecoderMenu()),
+      ToolItem(
+          name: 'Access Condition Matrix & Calculator',
+          description:
+              'Visualize, validate, and compute MIFARE Classic sector trailer permissions and check bits.',
+          icon: Icons.table_chart,
+          onPressed: const AccessConditionCalculatorMenu()),
     ];
 
     return Scaffold(

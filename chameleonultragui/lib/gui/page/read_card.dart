@@ -132,6 +132,7 @@ class ReadCardPageState extends State<ReadCardPage> {
 
 
     if (card != null) {
+      HapticFeedback.mediumImpact();
       setState(() {
         lfInfo.card = card;
         scanInProgress = false;
@@ -170,6 +171,7 @@ class ReadCardPageState extends State<ReadCardPage> {
       });
 
       if (hfInfo.cardExist && hfInfo.uid.isNotEmpty) {
+        HapticFeedback.mediumImpact();
         stopContinuousHFScan();
       }
     });
@@ -182,6 +184,7 @@ class ReadCardPageState extends State<ReadCardPage> {
     });
 
     if (hfInfo.cardExist && hfInfo.uid.isNotEmpty) {
+      HapticFeedback.mediumImpact();
       stopContinuousHFScan();
     }
   }

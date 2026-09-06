@@ -9,6 +9,8 @@ import 'package:chameleonultragui/helpers/mifare_ultralight/dump_highlighter.dar
 import 'package:chameleonultragui/helpers/mifare_ultralight/dump_analyzer.dart';
 import 'package:chameleonultragui/helpers/ndef.dart';
 import 'package:chameleonultragui/gui/menu/pages/ndef_editor.dart';
+import 'package:chameleonultragui/gui/menu/tools/wiegand_decoder.dart';
+import 'package:chameleonultragui/gui/menu/tools/access_condition_calculator.dart';
 import 'package:chameleonultragui/sharedprefsprovider.dart';
 import 'package:chameleonultragui/main.dart';
 import 'package:provider/provider.dart';
@@ -1965,10 +1967,30 @@ class DumpEditorState extends State<DumpEditor> {
                           child: Text(localizations.acl),
                         ),
                         ElevatedButton(
+                          onPressed: () {
+                            showDialog(
+                              context: context,
+                              builder: (_) =>
+                                  const AccessConditionCalculatorMenu(),
+                            );
+                          },
+                          child: const Text('ACL Matrix'),
+                        ),
+                        ElevatedButton(
                           onPressed: _showValueBlocks,
                           child: Text(localizations.value),
                         ),
                       ],
+                      ElevatedButton.icon(
+                        onPressed: () {
+                          showDialog(
+                            context: context,
+                            builder: (_) => const WiegandDecoderMenu(),
+                          );
+                        },
+                        icon: const Icon(Icons.credit_card, size: 16),
+                        label: const Text('Wiegand'),
+                      ),
                       ElevatedButton.icon(
                         onPressed: _startCompare,
                         label: Text(localizations.compare),

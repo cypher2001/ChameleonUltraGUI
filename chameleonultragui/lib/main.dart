@@ -92,6 +92,13 @@ class ChameleonGUIState extends ChangeNotifier {
     if (connector == null || !connector!.connected) {
       communicator = null;
       progress = null;
+      try {
+        HapticFeedback.lightImpact();
+      } catch (_) {}
+    } else {
+      try {
+        HapticFeedback.mediumImpact();
+      } catch (_) {}
     }
     notifyListeners();
   }
@@ -135,6 +142,11 @@ class ChameleonGUIState extends ChangeNotifier {
     progress = value;
     notifyListeners();
   }
+}
+
+class NavigateToPageIntent extends Intent {
+  final int pageIndex;
+  const NavigateToPageIntent(this.pageIndex);
 }
 
 class MainPage extends StatefulWidget {
@@ -316,86 +328,140 @@ class _MainPageState extends State<MainPage> {
       themeMode: widget.sharedPreferencesProvider.getTheme(), // Dark Theme
       home: LayoutBuilder(// Build Page
           builder: (context, constraints) {
-        return SafeArea(
-          left: false,
-          right: false,
-          top: false,
-          bottom: true,
-          child: Scaffold(
-              body: Row(
-                children: [
-                  (!appState.connector!.isDFU || !appState.connector!.connected)
-                      ? SafeArea(
-                          child: NavigationRail(
-                            key: appState.navigationRailKey,
-                            // Sidebar
-                            extended: appState.sharedPreferencesProvider
-                                .getSideBarExpanded(),
-                            destinations: [
-                              // Sidebar Items
-                              NavigationRailDestination(
-                                icon: const Icon(Icons.home),
-                                label: Text(
-                                    AppLocalizations.of(context)!.home), // Home
-                              ),
-                              NavigationRailDestination(
-                                disabled: !appState.connector!.connected,
-                                icon: const Icon(Icons.widgets),
-                                label: Text(
-                                    AppLocalizations.of(context)!.slot_manager),
-                              ),
-                              NavigationRailDestination(
-                                icon: const Icon(Icons.auto_awesome_motion),
-                                label: Text(
-                                    AppLocalizations.of(context)!.saved_cards),
-                              ),
-                              NavigationRailDestination(
-                                disabled: !appState.connector!.connected,
-                                icon: const Icon(Icons.sensors),
-                                label: Text(
-                                    AppLocalizations.of(context)!.read_card),
-                              ),
-                              NavigationRailDestination(
-                                disabled: !appState.connector!.connected,
-                                icon: const Icon(Icons.system_update_alt),
-                                label: Text(
-                                    AppLocalizations.of(context)!.write_card),
-                              ),
-                              NavigationRailDestination(
-                                icon: const Icon(Icons.handyman),
-                                label:
-                                    Text(AppLocalizations.of(context)!.tools),
-                              ),
-                              NavigationRailDestination(
-                                icon: const Icon(Icons.settings),
-                                label: Text(
-                                    AppLocalizations.of(context)!.settings),
-                              ),
-                              if (appState.devMode)
-                                NavigationRailDestination(
-                                  icon: const Icon(Icons.bug_report),
-                                  label: Text(
-                                      '🐞 ${AppLocalizations.of(context)!.debug} 🐞'),
-                                ),
-                            ],
-                            selectedIndex: selectedIndex,
-                            onDestinationSelected: (value) {
-                              setState(() {
-                                selectedIndex = value;
-                              });
-                            },
-                          ),
-                        )
-                      : const SizedBox(),
-                  Expanded(
-                    child: Container(
-                      color: Theme.of(context).colorScheme.primaryContainer,
-                      child: page,
-                    ),
-                  ),
-                ],
+        return Shortcuts(
+          shortcuts: {
+            LogicalKeySet(LogicalKeyboardKey.meta, LogicalKeyboardKey.digit1):
+                const NavigateToPageIntent(0),
+            LogicalKeySet(LogicalKeyboardKey.meta, LogicalKeyboardKey.digit2):
+                const NavigateToPageIntent(1),
+            LogicalKeySet(LogicalKeyboardKey.meta, LogicalKeyboardKey.digit3):
+                const NavigateToPageIntent(2),
+            LogicalKeySet(LogicalKeyboardKey.meta, LogicalKeyboardKey.digit4):
+                const NavigateToPageIntent(3),
+            LogicalKeySet(LogicalKeyboardKey.meta, LogicalKeyboardKey.digit5):
+                const NavigateToPageIntent(4),
+            LogicalKeySet(LogicalKeyboardKey.meta, LogicalKeyboardKey.digit6):
+                const NavigateToPageIntent(5),
+            LogicalKeySet(LogicalKeyboardKey.meta, LogicalKeyboardKey.keyR):
+                const NavigateToPageIntent(3),
+            LogicalKeySet(LogicalKeyboardKey.meta, LogicalKeyboardKey.keyS):
+                const NavigateToPageIntent(1),
+            LogicalKeySet(LogicalKeyboardKey.meta, LogicalKeyboardKey.keyO):
+                const NavigateToPageIntent(2),
+            LogicalKeySet(LogicalKeyboardKey.meta, LogicalKeyboardKey.keyT):
+                const NavigateToPageIntent(5),
+            LogicalKeySet(LogicalKeyboardKey.meta, LogicalKeyboardKey.comma):
+                const NavigateToPageIntent(6),
+            LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.keyR):
+                const NavigateToPageIntent(3),
+            LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.keyS):
+                const NavigateToPageIntent(1),
+            LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.keyO):
+                const NavigateToPageIntent(2),
+            LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.keyT):
+                const NavigateToPageIntent(5),
+            LogicalKeySet(LogicalKeyboardKey.control, LogicalKeyboardKey.comma):
+                const NavigateToPageIntent(6),
+          },
+          child: Actions(
+            actions: {
+              NavigateToPageIntent: CallbackAction<NavigateToPageIntent>(
+                onInvoke: (intent) {
+                  setState(() {
+                    selectedIndex = intent.pageIndex;
+                  });
+                  return null;
+                },
               ),
-              bottomNavigationBar: const BottomProgressBar()),
+            },
+            child: Focus(
+              autofocus: true,
+              child: SafeArea(
+                left: false,
+                right: false,
+                top: false,
+                bottom: true,
+                child: Scaffold(
+                    body: Row(
+                      children: [
+                        (!appState.connector!.isDFU ||
+                                !appState.connector!.connected)
+                            ? SafeArea(
+                                child: NavigationRail(
+                                  key: appState.navigationRailKey,
+                                  // Sidebar
+                                  extended: appState.sharedPreferencesProvider
+                                      .getSideBarExpanded(),
+                                  destinations: [
+                                    // Sidebar Items
+                                    NavigationRailDestination(
+                                      icon: const Icon(Icons.home),
+                                      label: Text(
+                                          AppLocalizations.of(context)!.home), // Home
+                                    ),
+                                    NavigationRailDestination(
+                                      disabled: !appState.connector!.connected,
+                                      icon: const Icon(Icons.widgets),
+                                      label: Text(AppLocalizations.of(context)!
+                                          .slot_manager),
+                                    ),
+                                    NavigationRailDestination(
+                                      icon:
+                                          const Icon(Icons.auto_awesome_motion),
+                                      label: Text(AppLocalizations.of(context)!
+                                          .saved_cards),
+                                    ),
+                                    NavigationRailDestination(
+                                      disabled: !appState.connector!.connected,
+                                      icon: const Icon(Icons.sensors),
+                                      label: Text(AppLocalizations.of(context)!
+                                          .read_card),
+                                    ),
+                                    NavigationRailDestination(
+                                      disabled: !appState.connector!.connected,
+                                      icon: const Icon(Icons.system_update_alt),
+                                      label: Text(AppLocalizations.of(context)!
+                                          .write_card),
+                                    ),
+                                    NavigationRailDestination(
+                                      icon: const Icon(Icons.handyman),
+                                      label: Text(
+                                          AppLocalizations.of(context)!.tools),
+                                    ),
+                                    NavigationRailDestination(
+                                      icon: const Icon(Icons.settings),
+                                      label: Text(AppLocalizations.of(context)!
+                                          .settings),
+                                    ),
+                                    if (appState.devMode)
+                                      NavigationRailDestination(
+                                        icon: const Icon(Icons.bug_report),
+                                        label: Text(
+                                            '🐞 ${AppLocalizations.of(context)!.debug} 🐞'),
+                                      ),
+                                  ],
+                                  selectedIndex: selectedIndex,
+                                  onDestinationSelected: (value) {
+                                    setState(() {
+                                      selectedIndex = value;
+                                    });
+                                  },
+                                ),
+                              )
+                            : const SizedBox(),
+                        Expanded(
+                          child: Container(
+                            color:
+                                Theme.of(context).colorScheme.primaryContainer,
+                            child: page,
+                          ),
+                        ),
+                      ],
+                    ),
+                    bottomNavigationBar: const BottomProgressBar()),
+              ),
+            ),
+          ),
         );
       }),
     );

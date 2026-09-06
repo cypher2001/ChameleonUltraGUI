@@ -34,6 +34,19 @@
 	<string>NSApplication</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.gametec.chameleonultragui</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>chameleon</string>
+			</array>
+		</dict>
+	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 </dict>
