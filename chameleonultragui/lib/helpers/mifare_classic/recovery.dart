@@ -44,6 +44,17 @@ class MifareClassicRecovery {
   MifareClassicType mifareClassicType;
   bool isMifareClassicEV1;
 
+  /// Live activity text from the native hardnested worker ("Brute force
+  /// phase: 12.34%", "Checking bitflip properties..."), shown under the
+  /// progress bar while an attack runs.
+  String hardnestedActivity = "";
+
+  /// True while an async hardnested attack is running on the native worker.
+  bool hardnestedRunning = false;
+
+  /// Set from the UI to ask the running hardnested attack to stop.
+  bool hardnestedCancelRequested = false;
+
   MifareClassicRecovery(
       {required this.appState,
       required this.update,
@@ -417,22 +428,39 @@ class MifareClassicRecovery {
             List<int> keys = [];
 
             if (prng == NTLevel.hard) {
+              hardnestedRunning = true;
               hardnestedProgress = 0;
+              hardnestedCancelRequested = false;
+              hardnestedActivity = "";
               update();
 
-              var result = await collectHardnestedNonces(
-                  validKeyBlock,
-                  0x60 + validKeyType,
-                  validKey,
-                  mfClassicGetSectorTrailerBlockBySector(sector),
-                  0x60 + keyType);
+              try {
+                var result = await collectHardnestedNonces(
+                    validKeyBlock,
+                    0x60 + validKeyType,
+                    validKey,
+                    mfClassicGetSectorTrailerBlockBySector(sector),
+                    0x60 + keyType);
 
-              if (result is String) {
+                if (result is String) {
+                  hardnestedRunning = false;
+                  hardnestedProgress = null;
+                  setMissingSector(sector, keyType);
+                  error = result;
+                  return;
+                } else {
+                  nonces = result as NestedNonces;
+                }
+              } on recovery.HardnestedCancelledException {
+                // User pressed cancel during nonce collection.
+                hardnestedRunning = false;
+                hardnestedActivity = "";
+                hardnestedProgress = null;
                 setMissingSector(sector, keyType);
-                error = result;
+                state = "";
+                update();
+                error = localizations.hardnested_cancelled;
                 return;
-              } else {
-                nonces = result as NestedNonces;
               }
             } else if (prng != NTLevel.backdoor) {
               nonces = await appState.communicator!.getMf1NestedNonces(
@@ -473,7 +501,50 @@ class MifareClassicRecovery {
             } else if (prng == NTLevel.hard) {
               var nested =
                   HardNestedDart(nonces: nonces!.getHardNested(distance!.uid));
-              keys = await recovery.hardNested(nested);
+
+              // Run on the native worker thread with live progress and a
+              // cooperative cancel, instead of a blind blocking FFI call.
+              hardnestedRunning = true;
+              hardnestedCancelRequested = false;
+              hardnestedActivity = "";
+              hardnestedProgress = null;
+              update();
+
+              await recovery.hardNestedStartAsync(nested);
+
+              bool cancelled = false;
+              try {
+                int recovered = await recovery.hardNestedAwait(
+                  onProgress: (progress) {
+                    hardnestedActivity = progress.activity;
+                    // Determinate bar only during brute force; bitflip /
+                    // candidate stages render as indeterminate (null).
+                    hardnestedProgress = progress.stage ==
+                            recovery.HardnestedStageDart.bruteforce
+                        ? progress.progress
+                        : null;
+                    update();
+                  },
+                  isCancelRequested: () => hardnestedCancelRequested,
+                );
+                keys = recovered != 0 ? [recovered] : [];
+              } on recovery.HardnestedCancelledException {
+                cancelled = true;
+              }
+
+              hardnestedRunning = false;
+              hardnestedActivity = "";
+              hardnestedProgress = null;
+
+              if (cancelled) {
+                // User pressed cancel: stop the whole recovery run, keep the
+                // keys found so far, and let the UI show the cancel message.
+                setMissingSector(sector, keyType);
+                state = "";
+                update();
+                error = localizations.hardnested_cancelled;
+                return;
+              }
             } else if (prng == NTLevel.backdoor) {
               setCheckingSector(sector, 1);
 
@@ -650,6 +721,9 @@ class MifareClassicRecovery {
       state = localizations.hardnested_collecting_nonces(
           (hardnestedProgress! * 256).toInt().toString());
       update();
+      if (hardnestedCancelRequested) {
+        throw const recovery.HardnestedCancelledException();
+      }
       if (info[1] == 256) {
         if ([
           0,
@@ -687,6 +761,14 @@ class MifareClassicRecovery {
   void setKeyAsFound(int sector, int keyType, Uint8List key) {
     checkMarks[sector + (keyType * 40)] = ChameleonKeyCheckmark.found;
     validKeys[sector + (keyType * 40)] = key;
+    update();
+  }
+
+  /// Asks the running hardnested attack (if any) to stop. The native worker
+  /// checks the flag between work items and the recovery loop then reports
+  /// the cancel through the UI state.
+  void cancelHardnested() {
+    hardnestedCancelRequested = true;
     update();
   }
 

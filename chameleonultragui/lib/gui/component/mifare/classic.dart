@@ -150,10 +150,27 @@ class CardReaderState extends State<MifareClassicHelper> {
           LinearProgressIndicator(value: widget.mfcInfo.recovery?.dumpProgress),
           const SizedBox(height: 8)
         ],
-        if (widget.mfcInfo.recovery?.hardnestedProgress != null &&
+        if (widget.mfcInfo.recovery?.hardnestedRunning == true &&
             widget.mfcInfo.recovery?.error == "") ...[
           LinearProgressIndicator(
               value: widget.mfcInfo.recovery?.hardnestedProgress),
+          const SizedBox(height: 4),
+          Row(children: [
+            Expanded(
+              child: Text(
+                widget.mfcInfo.recovery?.hardnestedActivity ?? "",
+                style: Theme.of(context).textTheme.bodySmall,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            TextButton(
+              onPressed: () {
+                widget.mfcInfo.recovery?.cancelHardnested();
+              },
+              child: Text(localizations.cancel),
+            ),
+          ]),
           const SizedBox(height: 12)
         ],
         if (widget.mfcInfo.recovery?.keyCheckProgress != null) ...[

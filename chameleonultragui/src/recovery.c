@@ -579,3 +579,195 @@ FFI_PLUGIN_EXPORT uint64_t mfkey64(Mfkey64 *data)
 
   return key;
 }
+
+// ===========================================================================
+// Async hardnested with progress polling and cooperative cancel.
+//
+// The pm3 hardnested code uses file-static state and is not reentrant, so we
+// run at most one async attack at a time on a dedicated worker thread. The
+// GUI polls hardnested_async_status() while the worker runs; cancel is
+// cooperative — hardnested_cancel_requested() is checked by the attack's
+// hot loops (see hardnested.c / hardnested_bruteforce.c).
+// ===========================================================================
+
+#include <pthread.h>
+
+// msclock() lives in pm3/util_posix.c, which is compiled into this library.
+extern uint64_t msclock(void);
+
+static pthread_mutex_t g_hn_mutex = PTHREAD_MUTEX_INITIALIZER;
+static HardnestedStatus g_hn_status = {0};
+static pthread_t g_hn_worker = {0};
+static int g_hn_running = 0;
+static int g_hn_cancel = 0;
+static uint8_t *g_hn_nonces = NULL;
+static uint32_t g_hn_nonces_len = 0;
+static uint64_t g_hn_last_report_ms = 0;
+
+static void *hardnested_worker(void *arg)
+{
+    (void)arg;
+    uint64_t foundkey = 0;
+    int rc = mfnestedhard(0, 0, NULL, 0, 0, NULL, false, false, false,
+                          &foundkey, (char *)g_hn_nonces, g_hn_nonces_len);
+
+    int cancelled = hardnested_cancel_requested();
+    pthread_mutex_lock(&g_hn_mutex);
+    if (cancelled)
+    {
+        g_hn_status.state = HN_STATE_CANCELLED;
+        g_hn_status.key = 0;
+    }
+    else if (rc == 1)
+    {
+        g_hn_status.state = HN_STATE_DONE;
+        g_hn_status.key = foundkey;
+    }
+    else if (rc == 0)
+    {
+        // Attack ran to completion but found no key; the caller retries.
+        g_hn_status.state = HN_STATE_DONE;
+        g_hn_status.key = 0;
+    }
+    else
+    {
+        // read_nonces()/setup failure (bad nonce buffer).
+        g_hn_status.state = HN_STATE_ERROR;
+        g_hn_status.key = 0;
+    }
+    free(g_hn_nonces);
+    g_hn_nonces = NULL;
+    g_hn_running = 0;
+    pthread_mutex_unlock(&g_hn_mutex);
+    return NULL;
+}
+
+FFI_PLUGIN_EXPORT int hardnested_async_start(HardNested *data)
+{
+    if (data == NULL || data->nonces == NULL || data->length == 0)
+    {
+        return 1;
+    }
+
+    pthread_mutex_lock(&g_hn_mutex);
+    if (g_hn_running)
+    {
+        pthread_mutex_unlock(&g_hn_mutex);
+        return 1;
+    }
+    g_hn_running = 1;
+    g_hn_cancel = 0;
+    memset(&g_hn_status, 0, sizeof(g_hn_status));
+    g_hn_status.state = HN_STATE_RUNNING;
+    g_hn_status.stage = HN_STAGE_INIT;
+
+    // The caller owns the nonce buffer (a Dart FFI allocation that may be
+    // freed as soon as this function returns), so make a private copy.
+    g_hn_nonces = malloc(data->length);
+    if (g_hn_nonces == NULL)
+    {
+        g_hn_running = 0;
+        pthread_mutex_unlock(&g_hn_mutex);
+        return 1;
+    }
+    memcpy(g_hn_nonces, data->nonces, data->length);
+    g_hn_nonces_len = data->length;
+    pthread_mutex_unlock(&g_hn_mutex);
+
+    int rc = pthread_create(&g_hn_worker, NULL, hardnested_worker, NULL);
+    if (rc != 0)
+    {
+        pthread_mutex_lock(&g_hn_mutex);
+        free(g_hn_nonces);
+        g_hn_nonces = NULL;
+        g_hn_running = 0;
+        g_hn_status.state = HN_STATE_ERROR;
+        pthread_mutex_unlock(&g_hn_mutex);
+        return 1;
+    }
+    pthread_detach(g_hn_worker);
+    return 0;
+}
+
+FFI_PLUGIN_EXPORT void hardnested_async_cancel(void)
+{
+    pthread_mutex_lock(&g_hn_mutex);
+    if (g_hn_running)
+    {
+        g_hn_cancel = 1;
+    }
+    pthread_mutex_unlock(&g_hn_mutex);
+}
+
+FFI_PLUGIN_EXPORT int hardnested_async_state(void)
+{
+    pthread_mutex_lock(&g_hn_mutex);
+    int state = g_hn_status.state;
+    pthread_mutex_unlock(&g_hn_mutex);
+    return state;
+}
+
+FFI_PLUGIN_EXPORT int hardnested_async_stage(void)
+{
+    pthread_mutex_lock(&g_hn_mutex);
+    int stage = g_hn_status.stage;
+    pthread_mutex_unlock(&g_hn_mutex);
+    return stage;
+}
+
+FFI_PLUGIN_EXPORT float hardnested_async_progress(void)
+{
+    pthread_mutex_lock(&g_hn_mutex);
+    float progress = g_hn_status.progress;
+    pthread_mutex_unlock(&g_hn_mutex);
+    return progress;
+}
+
+FFI_PLUGIN_EXPORT uint64_t hardnested_async_key(void)
+{
+    pthread_mutex_lock(&g_hn_mutex);
+    uint64_t key = g_hn_status.key;
+    pthread_mutex_unlock(&g_hn_mutex);
+    return key;
+}
+
+FFI_PLUGIN_EXPORT void hardnested_async_activity(char *out, int len)
+{
+    if (out == NULL || len <= 0)
+    {
+        return;
+    }
+    pthread_mutex_lock(&g_hn_mutex);
+    strncpy(out, g_hn_status.activity, (size_t)len - 1);
+    out[len - 1] = '\0';
+    pthread_mutex_unlock(&g_hn_mutex);
+}
+
+FFI_PLUGIN_EXPORT void hardnested_progress_report(int stage, const char *activity, float progress)
+{
+    // The brute-force worker reports once per bucket, which can be far more
+    // often than the UI can render. Throttle to ~5 updates/second; stage
+    // transitions are always recorded immediately.
+    uint64_t now = msclock();
+    pthread_mutex_lock(&g_hn_mutex);
+    if (stage != g_hn_status.stage || now - g_hn_last_report_ms >= 200)
+    {
+        g_hn_last_report_ms = now;
+        g_hn_status.stage = stage;
+        g_hn_status.progress = progress;
+        if (activity != NULL)
+        {
+            strncpy(g_hn_status.activity, activity, sizeof(g_hn_status.activity) - 1);
+            g_hn_status.activity[sizeof(g_hn_status.activity) - 1] = '\0';
+        }
+    }
+    pthread_mutex_unlock(&g_hn_mutex);
+}
+
+FFI_PLUGIN_EXPORT int hardnested_cancel_requested(void)
+{
+    pthread_mutex_lock(&g_hn_mutex);
+    int cancelled = g_hn_cancel;
+    pthread_mutex_unlock(&g_hn_mutex);
+    return cancelled;
+}

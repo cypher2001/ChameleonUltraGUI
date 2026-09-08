@@ -203,7 +203,7 @@ static void *
     thread_arg = (struct arg *)x;
     const int thread_id = thread_arg->thread_ID;
     uint32_t current_bucket = thread_id;
-    while (current_bucket < bucket_count)
+    while (current_bucket < bucket_count && !hardnested_cancel_requested())
     {
         statelist_t *bucket = buckets[current_bucket];
         if (bucket)
@@ -230,9 +230,11 @@ static void *
                 if (!thread_arg->silent)
                 {
                     char progress_text[80];
-                    snprintf(progress_text, sizeof(progress_text), "Brute force phase: %6.02f%%  ", 100.0 * (float)num_keys_tested / (float)(thread_arg->maximum_states));
+                    float bf_progress = 100.0 * (float)num_keys_tested / (float)(thread_arg->maximum_states);
+                    snprintf(progress_text, sizeof(progress_text), "Brute force phase: %6.02f%%  ", bf_progress);
                     float remaining_bruteforce = thread_arg->nonces[thread_arg->best_first_bytes[0]].expected_num_brute_force - (float)num_keys_tested / 2;
                     hardnested_print_progress(thread_arg->num_acquired_nonces, progress_text, remaining_bruteforce, 5000);
+                    hardnested_progress_report(HN_STAGE_BRUTEFORCE, progress_text, bf_progress / 100.0f);
                 }
             }
         }

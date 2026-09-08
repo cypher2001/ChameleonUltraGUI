@@ -155,6 +155,152 @@ Future<List<int>> hardNested(HardNestedDart nested) async {
   return completer.future;
 }
 
+/// Async hardnested execution state, mirroring HardnestedState in
+/// `src/recovery.h`.
+enum HardnestedStateDart {
+  idle(0),
+  running(1),
+  done(2),
+  cancelled(3),
+  error(4);
+
+  final int value;
+  const HardnestedStateDart(this.value);
+
+  static HardnestedStateDart fromValue(int value) =>
+      values.firstWhere((s) => s.value == value, orElse: () => idle);
+}
+
+/// Async hardnested stage, mirroring HardnestedStage in `src/recovery.h`.
+enum HardnestedStageDart {
+  init(0),
+  readNonces(1),
+  bitflip(2),
+  candidates(3),
+  bruteforce(4);
+
+  final int value;
+  const HardnestedStageDart(this.value);
+
+  static HardnestedStageDart fromValue(int value) =>
+      values.firstWhere((s) => s.value == value, orElse: () => init);
+}
+
+/// Snapshot of an in-flight async hardnested attack.
+class HardnestedProgressDart {
+  final HardnestedStateDart state;
+  final HardnestedStageDart stage;
+  final double progress; // 0..1 during brute force, else 0
+  final String activity;
+
+  HardnestedProgressDart(
+      {required this.state,
+      required this.stage,
+      required this.progress,
+      required this.activity});
+}
+
+/// Starts the hardnested attack in a background worker thread (native).
+/// [nonces] is the raw nonce buffer (uid + block/keytype header included,
+/// exactly as passed to the synchronous [hardNested]); it is copied by the
+/// native side so the Dart buffer may be freed after this returns.
+///
+/// Returns immediately. Poll with [hardNestedProgress] and stop with
+/// [hardNestedCancel]. Only one attack may run at a time; throws if a start
+/// is attempted while one is already running.
+Future<void> hardNestedStartAsync(HardNestedDart nested) async {
+  final Pointer<Uint8> noncePtr =
+      calloc<Uint8>(nested.nonces.length);
+  noncePtr.asTypedList(nested.nonces.length).setAll(0, nested.nonces);
+  final Pointer<HardNested> data = calloc<HardNested>();
+  data.ref.nonces = noncePtr.cast<Char>();
+  data.ref.length = nested.nonces.length;
+  try {
+    final int rc = _bindings.hardnested_async_start(data);
+    if (rc != 0) {
+      throw Exception('Hardnested already running or invalid input (rc=$rc)');
+    }
+  } finally {
+    calloc.free(noncePtr);
+    calloc.free(data);
+  }
+}
+
+/// Polls the in-flight async hardnested attack.
+HardnestedProgressDart hardNestedProgress() {
+  final activity = calloc<Char>(128);
+  try {
+    _bindings.hardnested_async_activity(activity, 128);
+    return HardnestedProgressDart(
+      state: HardnestedStateDart.fromValue(_bindings.hardnested_async_state()),
+      stage: HardnestedStageDart.fromValue(_bindings.hardnested_async_stage()),
+      progress: _bindings.hardnested_async_progress(),
+      activity: activity.cast<Utf8>().toDartString(),
+    );
+  } finally {
+    calloc.free(activity);
+  }
+}
+
+/// Requests cooperative cancellation of the in-flight async hardnested
+/// attack. The attack stops at the next safe point and reports state
+/// [HardnestedStateDart.cancelled].
+void hardNestedCancel() {
+  _bindings.hardnested_async_cancel();
+}
+
+/// Whether an async hardnested attack is currently running.
+bool hardNestedRunning() =>
+    hardNestedProgress().state == HardnestedStateDart.running;
+
+/// Waits for an async hardnested attack started with [hardNestedStartAsync]
+/// to finish, polling every [pollInterval]. [onProgress] receives each poll
+/// snapshot (throttled to the poll cadence, so it can drive a progress bar).
+/// When [isCancelRequested] returns true the attack is cancelled and this
+/// throws a [HardnestedCancelledException] so callers can distinguish an
+/// intentional stop from a failed attack.
+///
+/// Returns the recovered key, or 0 when the attack completed without finding
+/// one (callers retry with a fresh nonce set, as pm3 does).
+Future<int> hardNestedAwait({
+  Duration pollInterval = const Duration(milliseconds: 150),
+  void Function(HardnestedProgressDart)? onProgress,
+  bool Function()? isCancelRequested,
+}) async {
+  while (true) {
+    final snapshot = hardNestedProgress();
+    onProgress?.call(snapshot);
+
+    switch (snapshot.state) {
+      case HardnestedStateDart.running:
+        if (isCancelRequested?.call() ?? false) {
+          hardNestedCancel();
+        }
+        await Future<void>.delayed(pollInterval);
+      case HardnestedStateDart.done:
+        return _bindings.hardnested_async_key();
+      case HardnestedStateDart.cancelled:
+        throw const HardnestedCancelledException();
+      case HardnestedStateDart.error:
+        throw Exception('Hardnested failed');
+      case HardnestedStateDart.idle:
+        // Not started / between polls; keep waiting unless cancelled.
+        if (isCancelRequested?.call() ?? false) {
+          hardNestedCancel();
+        }
+        await Future<void>.delayed(pollInterval);
+    }
+  }
+}
+
+/// Thrown when an async hardnested attack was cancelled by the user.
+class HardnestedCancelledException implements Exception {
+  const HardnestedCancelledException();
+
+  @override
+  String toString() => 'Hardnested cancelled';
+}
+
 Future<List<int>> staticNested(StaticNestedDart nested) async {
   final SendPort helperIsolateSendPort = await _helperIsolateSendPort;
   final int requestId = _nextSumRequestId++;

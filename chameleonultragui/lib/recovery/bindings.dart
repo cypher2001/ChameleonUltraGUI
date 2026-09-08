@@ -141,6 +141,87 @@ class Recovery {
           'hardnested');
   late final _hardnested =
       _hardnestedPtr.asFunction<int Function(ffi.Pointer<HardNested>)>();
+
+  int hardnested_async_start(
+    ffi.Pointer<HardNested> data,
+  ) {
+    return _hardnested_async_start(
+      data,
+    );
+  }
+
+  late final _hardnested_async_startPtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<HardNested>)>>(
+          'hardnested_async_start');
+  late final _hardnested_async_start = _hardnested_async_startPtr.asFunction<
+      int Function(ffi.Pointer<HardNested>)>();
+
+  void hardnested_async_cancel() {
+    return _hardnested_async_cancel();
+  }
+
+  late final _hardnested_async_cancelPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function()>>(
+          'hardnested_async_cancel');
+  late final _hardnested_async_cancel =
+      _hardnested_async_cancelPtr.asFunction<void Function()>();
+
+  int hardnested_async_state() {
+    return _hardnested_async_state();
+  }
+
+  late final _hardnested_async_statePtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function()>>(
+          'hardnested_async_state');
+  late final _hardnested_async_state =
+      _hardnested_async_statePtr.asFunction<int Function()>();
+
+  int hardnested_async_stage() {
+    return _hardnested_async_stage();
+  }
+
+  late final _hardnested_async_stagePtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function()>>(
+          'hardnested_async_stage');
+  late final _hardnested_async_stage =
+      _hardnested_async_stagePtr.asFunction<int Function()>();
+
+  double hardnested_async_progress() {
+    return _hardnested_async_progress();
+  }
+
+  late final _hardnested_async_progressPtr =
+      _lookup<ffi.NativeFunction<ffi.Float Function()>>(
+          'hardnested_async_progress');
+  late final _hardnested_async_progress =
+      _hardnested_async_progressPtr.asFunction<double Function()>();
+
+  int hardnested_async_key() {
+    return _hardnested_async_key();
+  }
+
+  late final _hardnested_async_keyPtr =
+      _lookup<ffi.NativeFunction<ffi.Uint64 Function()>>(
+          'hardnested_async_key');
+  late final _hardnested_async_key =
+      _hardnested_async_keyPtr.asFunction<int Function()>();
+
+  void hardnested_async_activity(
+    ffi.Pointer<ffi.Char> out,
+    int len,
+  ) {
+    return _hardnested_async_activity(
+      out,
+      len,
+    );
+  }
+
+  late final _hardnested_async_activityPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Char>, ffi.Int32)>>(
+          'hardnested_async_activity');
+  late final _hardnested_async_activity =
+      _hardnested_async_activityPtr.asFunction<
+          void Function(ffi.Pointer<ffi.Char>, int)>();
 }
 
 final class DarksideItem extends ffi.Struct {

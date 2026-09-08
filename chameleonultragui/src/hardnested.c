@@ -1217,7 +1217,7 @@ static void
         for (uint16_t bitflip_idx = 0; bitflip_idx < num_1st_byte_effective_bitflips; bitflip_idx++)
         {
             uint16_t bitflip = all_effective_bitflip[bitflip_idx];
-            if (time_budget && timeout())
+            if ((time_budget && timeout()) || hardnested_cancel_requested())
             {
 #if defined(DEBUG_REDUCTION)
                 PrintAndLogEx("break at bitflip_idx " _YELLOW_("%d") " ...", bitflip_idx);
@@ -1267,7 +1267,7 @@ static void
         for (uint16_t bitflip_idx = num_1st_byte_effective_bitflips; bitflip_idx < num_all_effective_bitflips; bitflip_idx++)
         {
             uint16_t bitflip = all_effective_bitflip[bitflip_idx];
-            if (time_budget && timeout())
+            if ((time_budget && timeout()) || hardnested_cancel_requested())
             {
 #if defined(DEBUG_REDUCTION)
                 PrintAndLogEx("break at bitflip_idx " _YELLOW_("%d") " ...", bitflip_idx);
@@ -2129,6 +2129,7 @@ int mfnestedhard(uint8_t blockNo, uint8_t keyType, uint8_t *key, uint8_t trgBloc
     hardnested_stage = CHECK_1ST_BYTES | CHECK_2ND_BYTES;
     update_nonce_data(false);
     float brute_force_depth;
+    hardnested_progress_report(HN_STAGE_BITFLIP, "Checking bitflip properties...", 0.0);
     shrink_key_space(&brute_force_depth);
 
     if (trgkey != NULL)
@@ -2149,6 +2150,10 @@ int mfnestedhard(uint8_t blockNo, uint8_t keyType, uint8_t *key, uint8_t trgBloc
     float expected_brute_force1 = (float)num_odd * num_even / 2.0;
     float expected_brute_force2 = nonces[best_first_bytes[0]].expected_num_brute_force;
 
+    // Cooperative cancel: skip the (potentially very long) candidate
+    // generation / brute force phases entirely if the GUI asked us to stop.
+    if (!hardnested_cancel_requested())
+    {
     if (expected_brute_force1 < expected_brute_force2)
     {
         hardnested_print_progress(num_acquired_nonces, "(Ignoring Sum(a8) properties)", expected_brute_force1, 0);
@@ -2165,6 +2170,7 @@ int mfnestedhard(uint8_t blockNo, uint8_t keyType, uint8_t *key, uint8_t trgBloc
         pre_XOR_nonces();
         prepare_bf_test_nonces(nonces, best_first_bytes[0]);
 
+        hardnested_progress_report(HN_STAGE_BRUTEFORCE, "Brute force...", 0.0);
         key_found = brute_force(foundkey);
         free(candidates->states[ODD_STATE]);
         free(candidates->states[EVEN_STATE]);
@@ -2176,11 +2182,12 @@ int mfnestedhard(uint8_t blockNo, uint8_t keyType, uint8_t *key, uint8_t trgBloc
         pre_XOR_nonces();
         prepare_bf_test_nonces(nonces, best_first_bytes[0]);
 
-        for (uint8_t j = 0; j < NUM_SUMS && !key_found; j++)
+        for (uint8_t j = 0; j < NUM_SUMS && !key_found && !hardnested_cancel_requested(); j++)
         {
             float expected_brute_force = nonces[best_first_bytes[0]].expected_num_brute_force;
             snprintf(progress_text, sizeof(progress_text), "(%d. guess: Sum(a8) = %" PRIu16 ")", j + 1, sums[nonces[best_first_bytes[0]].sum_a8_guess[j].sum_a8_idx]);
             hardnested_print_progress(num_acquired_nonces, progress_text, expected_brute_force, 0);
+            hardnested_progress_report(HN_STAGE_CANDIDATES, progress_text, 0.0);
 
             if (trgkey != NULL && sums[nonces[best_first_bytes[0]].sum_a8_guess[j].sum_a8_idx] != real_sum_a8)
             {
@@ -2189,6 +2196,7 @@ int mfnestedhard(uint8_t blockNo, uint8_t keyType, uint8_t *key, uint8_t trgBloc
             }
 
             generate_candidates(first_byte_Sum, nonces[best_first_bytes[0]].sum_a8_guess[j].sum_a8_idx);
+            hardnested_progress_report(HN_STAGE_BRUTEFORCE, "Brute force...", 0.0);
             key_found = brute_force(foundkey);
             free_statelist_cache();
             free_candidates_memory(candidates);
@@ -2202,6 +2210,7 @@ int mfnestedhard(uint8_t blockNo, uint8_t keyType, uint8_t *key, uint8_t trgBloc
                 update_expected_brute_force(best_first_bytes[0]);
             }
         }
+    }
     }
 
     free_nonces_memory();
