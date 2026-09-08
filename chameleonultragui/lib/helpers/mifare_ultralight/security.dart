@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:chameleonultragui/bridge/chameleon.dart';
 import 'package:chameleonultragui/helpers/definitions.dart';
+import 'package:chameleonultragui/helpers/general.dart';
 import 'package:chameleonultragui/helpers/mifare_ultralight/general.dart';
 
 /// Result of analyzing the configuration pages of a password-protected
@@ -160,3 +161,48 @@ class MifareUltralightSecurity {
     );
   }
 }
+
+/// Well-known 4-byte PWDs worth trying on a password-protected EV1/NTAG.
+///
+/// Factory default is FFFFFFFF; the others are shipped defaults used by
+/// common readers/vendors (NExT, copykey...) plus widely documented
+/// "never changed" values. Mirrors the default list pm3 `hf mfu` tries.
+const List<String> kMifareUltralightDefaultPasswords = [
+  'FFFFFFFF', // NXP factory default
+  '00000000',
+  '4E457854', // "NExT"
+  'B6AA558D', // copykey
+  'A0A1A2A3',
+  '12345678',
+  '31323334', // "1234"
+  '11223344',
+  '00010203',
+  'FFFFFFFE',
+  '0A0B0C0D',
+];
+
+/// Tries [password] (4-byte hex) against a password-protected tag.
+///
+/// Returns the PACK response (>= 2 bytes) on success, or null when the tag
+/// NACKed (wrong password). The RF field is *not* kept between calls so the
+/// caller can cycle the field between attempts - NTAG21x/EV1 stop answering
+/// PWD_AUTH after a few consecutive failures until the next power cycle.
+Future<Uint8List?> mfuTryPassword(
+    ChameleonCommunicator communicator, String passwordHex) async {
+  try {
+    final resp = await communicator.send14ARaw(
+      Uint8List.fromList([0x1B, ...hexToBytes(passwordHex)]),
+      // Field re-activated per attempt by default: each try is a fresh
+      // power cycle, resetting the tag's failed-attempt counter.
+    );
+    // A successful auth answers with PACK (>= 2 bytes); failure is a 1-byte
+    // NACK or no response.
+    if (resp.length >= 2) {
+      return resp;
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+

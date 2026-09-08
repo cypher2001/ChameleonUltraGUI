@@ -58,6 +58,12 @@ class CardReaderState extends State<MifareUltralightHelper> {
   /// Whether the last completed read authenticated with a user-supplied key.
   bool lastReadUsedPassword = false;
 
+  /// True while a default-password sweep is running.
+  bool dictionaryRunning = false;
+
+  /// Index into [kMifareUltralightDefaultPasswords] for the sweep progress.
+  int dictionaryIndex = 0;
+
   Future<void> readCard({bool withPassword = false}) async {
     var appState = Provider.of<ChameleonGUIState>(context, listen: false);
     var localizations = AppLocalizations.of(context)!;
@@ -168,6 +174,71 @@ class CardReaderState extends State<MifareUltralightHelper> {
     }
     keyController.text = pwd;
     await readCard(withPassword: true);
+  }
+
+  /// Retries the read under a manually-chosen tag type. Used when detection
+  /// misidentified a protected NTAG21x / UL-EV1 as a plain Ultralight (the
+  /// panel shows the warning).
+  Future<void> retryReadAs(TagType type) async {
+    widget.hfInfo.type = type;
+    final localizations = AppLocalizations.of(context);
+    if (localizations != null) {
+      widget.hfInfo.tech = chameleonTagToString(type, localizations);
+    }
+    setState(() {
+      security = null;
+      unreadablePages = [];
+      lastReadUsedPassword = false;
+      error = "";
+    });
+    await readCard(withPassword: false);
+  }
+
+  /// Sweeps [kMifareUltralightDefaultPasswords] against the tag. Each
+  /// attempt re-powers the field (send14ARaw default) so the tag's
+  /// failed-auth counter resets - NTAG21x/EV1 stop answering PWD_AUTH after
+  /// a few consecutive failures until the next power cycle.
+  Future<void> tryDefaultPasswords() async {
+    var appState = Provider.of<ChameleonGUIState>(context, listen: false);
+    if (appState.communicator == null) {
+      return;
+    }
+
+    setState(() {
+      dictionaryRunning = true;
+      dictionaryIndex = 0;
+      error = "";
+    });
+
+    for (var i = 0; i < kMifareUltralightDefaultPasswords.length; i++) {
+      final pwd = kMifareUltralightDefaultPasswords[i];
+      setState(() {
+        dictionaryIndex = i;
+      });
+
+      final pack =
+          await mfuTryPassword(appState.communicator!, pwd);
+      if (pack != null) {
+        // Password accepted: PACK returned. Re-read with the found key.
+        keyController.text = pwd;
+        if (mounted) {
+          setState(() {
+            dictionaryRunning = false;
+          });
+        }
+        await readCard(withPassword: true);
+        return;
+      }
+    }
+
+    if (mounted) {
+      final localizations = AppLocalizations.of(context);
+      setState(() {
+        dictionaryRunning = false;
+        error = localizations?.ultralight_dictionary_failed ??
+            "dictionary_failed";
+      });
+    }
   }
 
   Future<void> saveCard({bool bin = false}) async {
@@ -308,7 +379,11 @@ class CardReaderState extends State<MifareUltralightHelper> {
                 security: security,
                 unreadablePages: unreadablePages,
                 readWithPassword: lastReadUsedPassword,
-                onUnlock: readCardWithRecoveredPassword),
+                dictionaryRunning: dictionaryRunning,
+                dictionaryIndex: dictionaryIndex,
+                onUnlock: readCardWithRecoveredPassword,
+                onRetryAs: retryReadAs,
+                onTryDefaultPasswords: tryDefaultPasswords),
             const SizedBox(height: 8),
             Wrap(
                 alignment: WrapAlignment.center,
@@ -373,6 +448,18 @@ class CardReaderState extends State<MifareUltralightHelper> {
 }
 }
 
+/// Password-capable UL-family types a misdetected tag may really be.
+/// A protected tag NACKs the marker-page probes, so the heuristic detector
+/// falls back to plain "Ultralight"; these are the plausible real types.
+const List<TagType> _retryCandidateTypes = [
+  TagType.ntag210,
+  TagType.ntag212,
+  TagType.ntag213,
+  TagType.ntag215,
+  TagType.ntag216,
+  TagType.ultralight21,
+];
+
 /// Reports, after a read, whether the dump is complete and what password
 /// protection the tag has. Always visible in the save state.
 ///
@@ -388,15 +475,45 @@ class _SecurityAnalysisPanel extends StatelessWidget {
   final MifareUltralightSecurity? security;
   final List<int> unreadablePages;
   final bool readWithPassword;
+  final bool dictionaryRunning;
+  final int dictionaryIndex;
   final Future<void> Function() onUnlock;
+  final Future<void> Function(TagType) onRetryAs;
+  final Future<void> Function() onTryDefaultPasswords;
 
   const _SecurityAnalysisPanel({
     required this.type,
     required this.security,
     required this.unreadablePages,
     required this.readWithPassword,
+    required this.dictionaryRunning,
+    required this.dictionaryIndex,
     required this.onUnlock,
+    required this.onRetryAs,
+    required this.onTryDefaultPasswords,
   });
+
+  /// "1-3, 5, 8-9" style summary of a page index list.
+  static String pageRanges(List<int> pages) {
+    if (pages.isEmpty) {
+      return "-";
+    }
+    final sorted = [...pages]..sort();
+    final parts = <String>[];
+    var start = sorted.first;
+    var prev = sorted.first;
+    for (var i = 1; i < sorted.length; i++) {
+      if (sorted[i] == prev + 1) {
+        prev = sorted[i];
+        continue;
+      }
+      parts.add(start == prev ? '$start' : '$start-$prev');
+      start = sorted[i];
+      prev = sorted[i];
+    }
+    parts.add(start == prev ? '$start' : '$start-$prev');
+    return parts.join(", ");
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -420,7 +537,19 @@ class _SecurityAnalysisPanel extends StatelessWidget {
     String? pwdValue;
     String? packValue;
 
-    if (!hasPasswordConfig) {
+    // A plain Ultralight physically cannot read-protect pages. If the app
+    // detected "plain UL" but pages came back empty, the type detection is
+    // almost certainly wrong (a protected NTAG21x / UL-EV1 masquerading as
+    // plain UL because its AUTH0 hides the marker pages). Flag it.
+    final misdetected =
+        isPlainUl && incomplete && unreadablePages.isNotEmpty;
+
+    if (misdetected) {
+      icon = Icons.warning_amber;
+      status = localizations.ultralight_analysis_maybe_misdetected;
+      detail = localizations.ultralight_analysis_pages_missing(
+          readableCount, totalPages);
+    } else if (!hasPasswordConfig) {
       // Plain UL / UL-C: no PWD-page analysis applies.
       icon = Icons.info_outline;
       if (isPlainUl) {
@@ -504,6 +633,46 @@ class _SecurityAnalysisPanel extends StatelessWidget {
               Text(localizations.ultralight_analysis_config_locked),
             if (authLimit > 0)
               Text(localizations.ultralight_analysis_auth_limit(authLimit)),
+            // Which pages failed (fix A) - always shown when incomplete.
+            if (incomplete) ...[
+              const SizedBox(height: 4),
+              Text(localizations.ultralight_analysis_unreadable_pages(
+                  pageRanges(unreadablePages))),
+            ],
+            // Misdetection recovery (fix B): offer plausible protected types.
+            if (misdetected) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: _retryCandidateTypes
+                      .map((candidate) => OutlinedButton(
+                            onPressed: () => onRetryAs(candidate),
+                            style: OutlinedButton.styleFrom(
+                                visualDensity: VisualDensity.compact),
+                            child: Text(chameleonTagToString(
+                                candidate, localizations)),
+                          ))
+                      .toList()),
+            ],
+            // Dictionary sweep (method 3) for password-capable tags whose config
+            // could not be read without a key.
+            if (hasPasswordConfig && !readWithPassword && !showUnlock) ...[
+              const SizedBox(height: 8),
+              if (dictionaryRunning) ...[
+                Text(localizations.ultralight_analysis_dictionary_running(
+                    dictionaryIndex + 1, kMifareUltralightDefaultPasswords.length)),
+                const SizedBox(height: 4),
+                LinearProgressIndicator(
+                    value: (dictionaryIndex + 1) /
+                        kMifareUltralightDefaultPasswords.length),
+              ] else
+                OutlinedButton.icon(
+                  onPressed: onTryDefaultPasswords,
+                  icon: const Icon(Icons.try_sms_star_outlined),
+                  label: Text(localizations.ultralight_analysis_try_defaults),
+                ),
+            ],
             if (showUnlock) ...[
               const SizedBox(height: 8),
               Text(localizations.ultralight_analysis_pwd_value(pwdValue ?? "")),

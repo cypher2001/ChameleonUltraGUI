@@ -586,5 +586,10 @@
   "ultralight_analysis_config_read_protected": "Configuration pages require a password to read (AUTH0/PROT set). A keyless read cannot see the protected area or the config.",
   "ultralight_analysis_pages_missing": "Only {read} of {total} pages were readable without a key - the rest are protected.",
   "ultralight_analysis_all_read": "All {total} pages were read successfully - the dump is complete.",
+  "ultralight_analysis_unreadable_pages": "Unreadable pages: {pages}",
+  "ultralight_analysis_maybe_misdetected": "Warning: this tag type cannot protect pages, yet some pages were unreadable. It is likely a password-protected NTAG21x/UL-EV1 that was misdetected as a plain Ultralight. Re-read as one of:",
+  "ultralight_analysis_try_defaults": "Try common/default passwords",
+  "ultralight_analysis_dictionary_running": "Trying password {current} of {total}...",
+  "ultralight_dictionary_failed": "None of the common passwords matched. The tag uses a custom password - sniff it from a legitimate reader exchange or try read-with-key.",
   "hardnested_cancelled": "Hardnested attack cancelled"
 }
