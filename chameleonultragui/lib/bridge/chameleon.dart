@@ -5,6 +5,7 @@ import 'package:chameleonultragui/helpers/definitions.dart';
 import 'package:chameleonultragui/helpers/general.dart';
 import 'package:chameleonultragui/connector/serial_abstract.dart';
 import 'package:chameleonultragui/helpers/mifare_classic/general.dart';
+import 'package:chameleonultragui/helpers/mifare_classic/key_check_batched.dart';
 import 'package:logger/logger.dart';
 
 // Some ChatGPT magic
@@ -417,6 +418,50 @@ class ChameleonCommunicator {
             [block, keyType, keys.length, ...keys.expand((key) => key)])));
 
     return resp!.status == 0 ? resp.data.sublist(1) : null;
+  }
+
+  /// Batched MIFARE Classic key check across ALL sectors in a single round
+  /// trip (cmd 2012, `mf1CheckKeysOfSectors`).
+  ///
+  /// [mask] is the 10-byte skip mask (bit set = do not check that
+  /// sector/key-type slot); [keys] are the 6-byte keys to try (deduplicated
+  /// by the firmware). [timeout] bounds the whole call; the worst case is
+  /// keys × unmasked slots × ~0.1 s, so budget accordingly (see
+  /// `MifareClassicRecovery.checkKeysBatched`). Returns a map of slot index
+  /// -> found 6-byte key, or an empty map when no key matched. Throws when
+  /// the tag is lost mid-check (status HF_TAG_NO), so callers can surface a
+  /// meaningful error instead of silently treating a vanished card as
+  /// "no key found".
+  ///
+  /// Requires firmware that supports cmd 2012; gate with
+  /// [supportsMf1CheckKeysOfSectors] (or catch [Exception]) and fall back to
+  /// [mf1AuthMultipleKeys].
+  Future<Map<int, Uint8List>> mf1CheckKeysOfSectors(Uint8List mask,
+      List<Uint8List> keys,
+      {Duration timeout = const Duration(seconds: 60)}) async {
+    if (keys.isEmpty) return {};
+    var resp = await sendCmd(ChameleonCommand.mf1CheckKeysOfSectors,
+        data: Uint8List.fromList([...mask, ...keys.expand((key) => key)]),
+        timeout: timeout);
+    if (resp == null || resp.status != 0) {
+      // HF_TAG_NO (0x01) => tag was removed mid-check. Do not pretend the
+      // sweep completed: the caller must know to retry / re-place the card.
+      throw Exception(
+          'Tag lost during batched key check (status ${resp?.status})');
+    }
+    return parseCheckKeysOfSectorsResponse(resp.data);
+  }
+
+  /// Whether the connected firmware supports the batched key check
+  /// (cmd 2012). Falls back to false on any communication error so callers
+  /// transparently keep using the legacy per-sector path.
+  Future<bool> supportsMf1CheckKeysOfSectors() async {
+    try {
+      final capabilities = await getDeviceCapabilities();
+      return capabilities.contains(ChameleonCommand.mf1CheckKeysOfSectors.value);
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<Uint8List> mf1ReadBlock(int block, int keyType, Uint8List key) async {

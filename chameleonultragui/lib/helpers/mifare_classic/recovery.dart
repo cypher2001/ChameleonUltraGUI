@@ -5,6 +5,7 @@ import 'package:chameleonultragui/generated/i18n/app_localizations.dart';
 import 'package:chameleonultragui/helpers/definitions.dart';
 import 'package:chameleonultragui/helpers/general.dart';
 import 'package:chameleonultragui/helpers/mifare_classic/general.dart';
+import 'package:chameleonultragui/helpers/mifare_classic/key_check_batched.dart';
 import 'package:chameleonultragui/main.dart';
 import 'package:chameleonultragui/recovery/recovery.dart';
 import 'package:chameleonultragui/sharedprefsprovider.dart';
@@ -181,11 +182,31 @@ class MifareClassicRecovery {
   Future<void> checkKeys({bool skipDefaultDictionary = false}) async {
     initializeEV1();
 
-    for (var sector = 0;
-        sector <
-            mfClassicGetSectorCount(mifareClassicType,
-                isEV1: isMifareClassicEV1);
-        sector++) {
+    final sectorCount = mfClassicGetSectorCount(mifareClassicType,
+        isEV1: isMifareClassicEV1);
+
+    // Batched path: one round trip per key chunk across ALL sectors at once
+    // (cmd 2012). Falls back to the legacy per-sector loop only when the
+    // firmware lacks cmd 2012 support. Both paths leave identical state
+    // behind (found keys set, unmatched slots back to none), so downstream
+    // recovery/dump is unchanged. Errors (e.g. tag removed mid-sweep)
+    // propagate to the UI's existing error handler.
+    bool batched = false;
+    try {
+      batched = await appState.communicator!.supportsMf1CheckKeysOfSectors();
+    } catch (_) {}
+
+    if (batched) {
+      await checkKeysBatched(
+          sectorCount: sectorCount,
+          skipDefaultDictionary: skipDefaultDictionary);
+      computeAllKeysExists(sectorCount);
+      state = "";
+      update();
+      return;
+    }
+
+    for (var sector = 0; sector < sectorCount; sector++) {
       List<Uint8List> keyList = [
         ...selectedDictionary!.keys,
         if (!skipDefaultDictionary)
@@ -198,13 +219,143 @@ class MifareClassicRecovery {
       }
     }
 
-    // Key check part competed, checking found keys
+    computeAllKeysExists(sectorCount);
+    state = "";
+    update();
+  }
+
+  /// Batched multi-sector dictionary check (cmd 2012).
+  ///
+  /// Sends the key list in chunks; each chunk is tried against every
+  /// not-yet-found (sector, key type) slot in a single round trip. The
+  /// firmware deduplicates keys and auto-reads Key B from the sector trailer
+  /// whenever a Key A match allows it. Chunk size and per-call timeout follow
+  /// the RRG reference client (`chameleon_cli_unit.check_keys`): worst-case
+  /// auth count is keys × unmasked slots, budgeted at 0.1 s per auth.
+  Future<void> checkKeysBatched({
+    required int sectorCount,
+    bool skipDefaultDictionary = false,
+  }) async {
+    if (selectedDictionary == null) return;
+
+    // Merge dictionary + default keys exactly like the legacy path.
+    final keySet = <String, Uint8List>{};
+    for (final key in selectedDictionary!.keys) {
+      keySet[bytesToHex(key)] = key;
+    }
+    if (!skipDefaultDictionary) {
+      for (final key in gMifareClassicKeys) {
+        keySet.putIfAbsent(bytesToHex(key), () => key);
+      }
+    }
+    final keys = keySet.values.toList();
+    if (keys.isEmpty) return;
+
+    // Slots we still need a key for: not found, not disabled, within the
+    // card's sector count. Firmware only iterates 40 sectors; skipping the
+    // rest keeps nonexistent trailer blocks untouched.
+    final checkedSlots = <int>[];
+    for (var sector = 0; sector < sectorCount; sector++) {
+      for (var keyType = 0; keyType < 2; keyType++) {
+        if (getSectorState(sector, keyType) == ChameleonKeyCheckmark.none) {
+          checkedSlots.add(mfClassicKeySlot(sector, keyType));
+        }
+      }
+    }
+    if (checkedSlots.isEmpty) return;
+
+    // Mark every slot we will attempt as "checking" for live UI feedback.
+    for (final slot in checkedSlots) {
+      setCheckingSector(slot >> 1, slot & 1);
+    }
+    update();
+
+    // 20 keys per call keeps worst-case auth time bounded and matches the
+    // RRG reference client. (The old per-sector path sent 32/64 keys to a
+    // single block; here every key is tried against every remaining slot, so
+    // a smaller chunk with an adaptive timeout is the correct trade-off.)
+    const int chunkSize = 20;
+
+    var mask = buildCheckKeysOfSectorsMask(checkedSlots);
+    int bitsToCheck = checkedSlots.length;
+
+    var chunkIndex = 0;
+    for (var i = 0; i < keys.length && bitsToCheck > 0; i += chunkSize) {
+      chunkIndex++;
+      final end = i + chunkSize > keys.length ? keys.length : i + chunkSize;
+      final chunk = keys.sublist(i, end);
+
+      // Worst-case budget: each key is tried against each still-unmasked
+      // slot (~0.1 s per auth), plus 1 s base, mirroring the reference CLI.
+      final timeout = Duration(
+          milliseconds: (1000 + bitsToCheck * chunk.length * 100).round());
+
+      try {
+        final found = await appState.communicator!
+            .mf1CheckKeysOfSectors(mask, chunk, timeout: timeout);
+
+        // The firmware already sweeps every key in this chunk against every
+        // unmasked slot in one call, so no per-key re-propagation is needed.
+        for (final entry in found.entries) {
+          final slot = entry.key;
+          final sector = slot >> 1;
+          final keyType = slot & 1;
+          if (sector >= sectorCount) continue;
+          setKeyAsFound(sector, keyType, entry.value);
+        }
+
+        // Rebuild the mask from live state so slots found in this chunk are
+        // skipped (mask bit set) in later chunks.
+        final remaining = _unfoundSlots(sectorCount);
+        bitsToCheck = remaining.length;
+        mask = buildCheckKeysOfSectorsMask(remaining);
+        if (bitsToCheck == 0) {
+          break;
+        }
+      } catch (e) {
+        // Tag removed mid-sweep: reset any "checking" marks and rethrow so
+        // the caller surfaces the error and the UI resets to a sane state.
+        for (final slot in checkedSlots) {
+          setMissingSector(slot >> 1, slot & 1);
+        }
+        rethrow;
+      }
+
+      final totalChunks = (keys.length / chunkSize).ceil();
+      if (totalChunks > 10) {
+        keyCheckProgress = chunkIndex / totalChunks;
+      }
+      state = localizations.checking_keys(keys.length - end);
+      update();
+    }
+
+    // Unmatched slots: back to "none" so downstream recovery knows the
+    // dictionary was exhausted for them.
+    for (final slot in checkedSlots) {
+      final state = getSectorState(slot >> 1, slot & 1);
+      if (state == ChameleonKeyCheckmark.checking) {
+        setMissingSector(slot >> 1, slot & 1);
+      }
+    }
+    keyCheckProgress = null;
+    update();
+  }
+
+  List<int> _unfoundSlots(int sectorCount) {
+    final slots = <int>[];
+    for (var sector = 0; sector < sectorCount; sector++) {
+      for (var keyType = 0; keyType < 2; keyType++) {
+        if (getSectorState(sector, keyType) == ChameleonKeyCheckmark.none) {
+          slots.add(mfClassicKeySlot(sector, keyType));
+        }
+      }
+    }
+    return slots;
+  }
+
+  void computeAllKeysExists(int sectorCount) {
     allKeysExists = true;
-    for (var sector = 0;
-        sector <
-            mfClassicGetSectorCount(mifareClassicType,
-                isEV1: isMifareClassicEV1);
-        sector++) {
+    for (var sector = 0; sector < sectorCount; sector++) {
       for (var keyType = 0; keyType < 2; keyType++) {
         if (getSectorState(sector, keyType) != ChameleonKeyCheckmark.found &&
             getSectorState(sector, keyType) != ChameleonKeyCheckmark.disabled) {
@@ -212,9 +363,6 @@ class MifareClassicRecovery {
         }
       }
     }
-
-    state = "";
-    update();
   }
 
   Future<void> recoverKeys() async {
