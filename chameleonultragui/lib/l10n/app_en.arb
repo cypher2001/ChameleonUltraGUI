@@ -572,5 +572,14 @@
   "lf_sniff_loaded": "Loaded {count} sample(s) from file.",
   "sniff_device_required_hint": "No device connected. Connect a Chameleon to capture, or load a saved file.",
   "view_dump": "View dump",
+  "ultralight_security_analysis": "Security configuration",
+  "ultralight_analysis_leaked": "Password readable in clear! The PWD page is not protected (AUTH0 unset or read access open). The password is recoverable without authenticating.",
+  "ultralight_analysis_open": "No memory protection: AUTH0 is not set, all pages are readable and writable without a password.",
+  "ultralight_analysis_protected": "Pages {page} and above are password protected (AUTH0).",
+  "ultralight_analysis_config_locked": "Configuration area is permanently locked (CFGLCK).",
+  "ultralight_analysis_auth_limit": "Password attempts limited to {count} before lockout.",
+  "ultralight_analysis_pwd_value": "Recovered password (PWD): {pwd}",
+  "ultralight_analysis_pack_value": "Recovered PACK: {pack}",
+  "ultralight_analysis_unlock": "Unlock & read with recovered password",
   "hardnested_cancelled": "Hardnested attack cancelled"
 }
