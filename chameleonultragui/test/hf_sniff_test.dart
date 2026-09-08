@@ -57,6 +57,39 @@ void main() {
     expect(capture.summary.authRequests.single.block, 0x04);
   });
 
+  test('summarizeHf14aSniff recovers UL-EV1 PWD from a 0x1B auth exchange',
+      () {
+    // Reader -> tag PWD_AUTH with the cleartext 4-byte password.
+    final pwd = Uint8List.fromList([0x1B, 0xDE, 0xAD, 0xBE, 0xEF]);
+    // Tag -> reader 2-byte PACK.
+    final pack = Uint8List.fromList([0x12, 0x34]);
+
+    final raw = Uint8List.fromList([
+      ..._packFrame(pwd, isTx: false),
+      ..._packFrame(pack, isTx: true),
+    ]);
+
+    final capture = HfSniffCapture.fromChameleonBytes(raw);
+
+    expect(capture.summary.ultralightAuths, hasLength(1));
+    expect(capture.summary.ultralightAuths.single.pwdHex, 'deadbeef');
+    expect(capture.summary.ultralightAuths.single.packHex, '1234');
+  });
+
+  test('summarizeHf14aSniff keeps a PWD even when the PACK frame is missing',
+      () {
+    final raw = Uint8List.fromList([
+      ..._packFrame(
+          Uint8List.fromList([0x1B, 0x11, 0x22, 0x33, 0x44]), isTx: false),
+    ]);
+
+    final capture = HfSniffCapture.fromChameleonBytes(raw);
+
+    expect(capture.summary.ultralightAuths, hasLength(1));
+    expect(capture.summary.ultralightAuths.single.pwdHex, '11223344');
+    expect(capture.summary.ultralightAuths.single.packHex, isNull);
+  });
+
   test('extractHf14aSniffNonces groups paired exchanges for recovery', () {
     final raw = Uint8List.fromList([
       ..._packFrame(Uint8List.fromList([0x93, 0x70, 0x11, 0x22, 0x33, 0x44]),

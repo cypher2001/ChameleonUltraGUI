@@ -46,6 +46,16 @@ class HfSniffAuthRequest {
   });
 }
 
+/// A MIFARE Ultralight EV1/NTAG password authentication observed on the
+/// wire. PWD travels in cleartext in the 0x1B command, so a single sniffed
+/// reader transaction recovers the tag password without any cracking.
+class HfSniffUltralightAuth {
+  final String pwdHex;
+  final String? packHex;
+
+  const HfSniffUltralightAuth({required this.pwdHex, this.packHex});
+}
+
 class HfSniffSummary {
   final int frameCount;
   final int readerFrameCount;
@@ -54,6 +64,7 @@ class HfSniffSummary {
   final bool ratsSeen;
   final List<String> aids;
   final List<HfSniffAuthRequest> authRequests;
+  final List<HfSniffUltralightAuth> ultralightAuths;
   final bool arqcSeen;
   final bool tcSeen;
   final bool halted;
@@ -68,6 +79,7 @@ class HfSniffSummary {
     required this.ratsSeen,
     required this.aids,
     required this.authRequests,
+    required this.ultralightAuths,
     required this.arqcSeen,
     required this.tcSeen,
     required this.halted,
@@ -342,6 +354,7 @@ HfSniffSummary summarizeHf14aSniff(List<HfSniffFrame> frames) {
   List<int>? uidCl3;
   final aids = <String>[];
   final authRequests = <HfSniffAuthRequest>[];
+  final ultralightAuths = <HfSniffUltralightAuth>[];
   bool authSeen = false;
   bool arqcSeen = false;
   bool tcSeen = false;
@@ -349,10 +362,27 @@ HfSniffSummary summarizeHf14aSniff(List<HfSniffFrame> frames) {
   bool ratsSeen = false;
   String? atcTag;
   int? amountMinorUnits;
+  String? pendingUlPwd;
 
   for (final frame in frames) {
     final data = frame.data;
-    if (data.isEmpty || frame.isCardToReader) {
+    if (data.isEmpty) {
+      continue;
+    }
+
+    // UL-EV1/NTAG PWD auth: reader sends 0x1B + cleartext 4-byte PWD, the
+    // tag answers with the 2-byte PACK. Capture both when observed.
+    if (frame.isReaderToCard && data[0] == 0x1B && data.length >= 5) {
+      pendingUlPwd = _hex(Uint8List.fromList(data.sublist(1, 5)),
+          spaced: false);
+    } else if (frame.isCardToReader && pendingUlPwd != null) {
+      // PACK response (2 bytes, possibly padded).
+      final packLen = data.length >= 2 ? 2 : data.length;
+      final pack =
+          _hex(Uint8List.fromList(data.sublist(0, packLen)), spaced: false);
+      ultralightAuths.add(
+          HfSniffUltralightAuth(pwdHex: pendingUlPwd, packHex: pack));
+      pendingUlPwd = null;
       continue;
     }
 
@@ -436,6 +466,12 @@ HfSniffSummary summarizeHf14aSniff(List<HfSniffFrame> frames) {
   ];
   final uid = uidBytes.isEmpty ? null : _hex(Uint8List.fromList(uidBytes));
 
+  // A PWD observed without its PACK (or a truncated capture) is still a
+  // full password recovery - keep it.
+  if (pendingUlPwd != null) {
+    ultralightAuths.add(HfSniffUltralightAuth(pwdHex: pendingUlPwd));
+  }
+
   return HfSniffSummary(
     frameCount: frames.length,
     readerFrameCount: frames.where((frame) => frame.isReaderToCard).length,
@@ -448,6 +484,7 @@ HfSniffSummary summarizeHf14aSniff(List<HfSniffFrame> frames) {
             HfSniffAuthRequest(keyType: 'unknown', block: -1)
           ]
         : authRequests,
+    ultralightAuths: ultralightAuths,
     arqcSeen: arqcSeen,
     tcSeen: tcSeen,
     halted: halted,
@@ -701,6 +738,11 @@ String _decodeHf14aFrame(HfSniffFrame frame) {
   }
   if (b0 == 0x61) {
     return data.length > 1 ? 'AUTH KeyB  block=${data[1]}' : 'AUTH KeyB';
+  }
+  if (b0 == 0x1B && data.length >= 5) {
+    // UL-EV1/NTAG PWD_AUTH: the 4-byte password travels in cleartext.
+    final pwd = _hex(Uint8List.fromList(data.sublist(1, 5)), spaced: false);
+    return 'PWD_AUTH (UL/NTAG)  password=$pwd';
   }
   if (bitLength == 72) {
     return '(encrypted nonce - auth challenge/response)';

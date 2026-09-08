@@ -5,6 +5,7 @@ import 'package:chameleonultragui/gui/page/read_card.dart';
 import 'package:chameleonultragui/helpers/general.dart';
 import 'package:chameleonultragui/helpers/definitions.dart';
 import 'package:chameleonultragui/helpers/mifare_ultralight/general.dart';
+import 'package:chameleonultragui/helpers/mifare_ultralight/pwdgen.dart';
 import 'package:chameleonultragui/helpers/mifare_ultralight/security.dart';
 import 'package:chameleonultragui/helpers/validators.dart';
 import 'package:chameleonultragui/main.dart';
@@ -58,11 +59,18 @@ class CardReaderState extends State<MifareUltralightHelper> {
   /// Whether the last completed read authenticated with a user-supplied key.
   bool lastReadUsedPassword = false;
 
-  /// True while a default-password sweep is running.
+  /// True while a password sweep (defaults / dictionary / pwdgen) runs.
   bool dictionaryRunning = false;
 
-  /// Index into [kMifareUltralightDefaultPasswords] for the sweep progress.
+  /// Index into the merged candidate list for the sweep progress.
   int dictionaryIndex = 0;
+
+  /// Dictionaries holding 4-byte keys (seeded + user-editable), shown as a
+  /// dropdown next to the sweep button.
+  List<Dictionary> ulDictionaries = [];
+
+  /// Currently selected user dictionary id, or null for built-ins only.
+  String? selectedDictionaryId;
 
   Future<void> readCard({bool withPassword = false}) async {
     var appState = Provider.of<ChameleonGUIState>(context, listen: false);
@@ -162,6 +170,12 @@ class CardReaderState extends State<MifareUltralightHelper> {
       state = MifareUltralightState.save;
       security = sec;
       lastReadUsedPassword = withPassword;
+      // Refresh the editable 4-byte dictionary list for the sweep dropdown.
+      ulDictionaries = appState.sharedPreferencesProvider
+          .getMifareUltralightDictionaries();
+      if (selectedDictionaryId == null && ulDictionaries.isNotEmpty) {
+        selectedDictionaryId = ulDictionaries.first.id;
+      }
     });
   }
 
@@ -194,15 +208,35 @@ class CardReaderState extends State<MifareUltralightHelper> {
     await readCard(withPassword: false);
   }
 
-  /// Sweeps [kMifareUltralightDefaultPasswords] against the tag. Each
-  /// attempt re-powers the field (send14ARaw default) so the tag's
-  /// failed-auth counter resets - NTAG21x/EV1 stop answering PWD_AUTH after
-  /// a few consecutive failures until the next power cycle.
-  Future<void> tryDefaultPasswords() async {
+  /// Sweeps candidate passwords against the tag: UID-derived pwdgen
+  /// algorithms first (cheap, targeted), then the built-in default list,
+  /// then the selected user dictionary (if any). Each attempt re-powers the
+  /// field (send14ARaw default) so the tag's failed-auth counter resets -
+  /// NTAG21x/EV1 stop answering PWD_AUTH after a few consecutive failures
+  /// until the next power cycle.
+  Future<void> tryPasswords() async {
     var appState = Provider.of<ChameleonGUIState>(context, listen: false);
     if (appState.communicator == null) {
       return;
     }
+
+    // Load the user dictionary (4-byte keys) if one is selected.
+    final userDictKeys = <String>[];
+    if (selectedDictionaryId != null) {
+      for (final dict in ulDictionaries) {
+        if (dict.id == selectedDictionaryId) {
+          for (final key in dict.keys) {
+            userDictKeys.add(bytesToHex(key).toUpperCase());
+          }
+        }
+      }
+    }
+
+    final candidates = mifareUltralightMergeCandidates(
+      widget.hfInfo.uid.replaceAll(' ', ''),
+      defaults: kMifareUltralightDefaultPasswords,
+      dictionary: userDictKeys,
+    );
 
     setState(() {
       dictionaryRunning = true;
@@ -210,14 +244,13 @@ class CardReaderState extends State<MifareUltralightHelper> {
       error = "";
     });
 
-    for (var i = 0; i < kMifareUltralightDefaultPasswords.length; i++) {
-      final pwd = kMifareUltralightDefaultPasswords[i];
+    for (var i = 0; i < candidates.length; i++) {
+      final pwd = candidates[i];
       setState(() {
         dictionaryIndex = i;
       });
 
-      final pack =
-          await mfuTryPassword(appState.communicator!, pwd);
+      final pack = await mfuTryPassword(appState.communicator!, pwd);
       if (pack != null) {
         // Password accepted: PACK returned. Re-read with the found key.
         keyController.text = pwd;
@@ -381,9 +414,25 @@ class CardReaderState extends State<MifareUltralightHelper> {
                 readWithPassword: lastReadUsedPassword,
                 dictionaryRunning: dictionaryRunning,
                 dictionaryIndex: dictionaryIndex,
+                candidateTotal: mifareUltralightMergeCandidates(
+                  widget.hfInfo.uid.replaceAll(' ', ''),
+                  defaults: kMifareUltralightDefaultPasswords,
+                  dictionary: [
+                    for (final d in ulDictionaries)
+                      if (d.id == selectedDictionaryId)
+                        for (final k in d.keys) bytesToHex(k).toUpperCase()
+                  ],
+                ).length,
+                ulDictionaries: ulDictionaries,
+                selectedDictionaryId: selectedDictionaryId,
+                onDictionaryChanged: (id) {
+                  setState(() {
+                    selectedDictionaryId = id;
+                  });
+                },
                 onUnlock: readCardWithRecoveredPassword,
                 onRetryAs: retryReadAs,
-                onTryDefaultPasswords: tryDefaultPasswords),
+                onTryPasswords: tryPasswords),
             const SizedBox(height: 8),
             Wrap(
                 alignment: WrapAlignment.center,
@@ -477,9 +526,13 @@ class _SecurityAnalysisPanel extends StatelessWidget {
   final bool readWithPassword;
   final bool dictionaryRunning;
   final int dictionaryIndex;
+  final int candidateTotal;
+  final List<Dictionary> ulDictionaries;
+  final String? selectedDictionaryId;
   final Future<void> Function() onUnlock;
   final Future<void> Function(TagType) onRetryAs;
-  final Future<void> Function() onTryDefaultPasswords;
+  final Future<void> Function() onTryPasswords;
+  final ValueChanged<String?> onDictionaryChanged;
 
   const _SecurityAnalysisPanel({
     required this.type,
@@ -488,9 +541,13 @@ class _SecurityAnalysisPanel extends StatelessWidget {
     required this.readWithPassword,
     required this.dictionaryRunning,
     required this.dictionaryIndex,
+    required this.candidateTotal,
+    required this.ulDictionaries,
+    required this.selectedDictionaryId,
     required this.onUnlock,
     required this.onRetryAs,
-    required this.onTryDefaultPasswords,
+    required this.onTryPasswords,
+    required this.onDictionaryChanged,
   });
 
   /// "1-3, 5, 8-9" style summary of a page index list.
@@ -655,23 +712,53 @@ class _SecurityAnalysisPanel extends StatelessWidget {
                           ))
                       .toList()),
             ],
-            // Dictionary sweep (method 3) for password-capable tags whose config
+            // Password sweep (methods 2+3): pwdgen from UID + defaults + the
+            // selected user dictionary - for password-capable tags whose config
             // could not be read without a key.
             if (hasPasswordConfig && !readWithPassword && !showUnlock) ...[
               const SizedBox(height: 8),
-              if (dictionaryRunning) ...[
-                Text(localizations.ultralight_analysis_dictionary_running(
-                    dictionaryIndex + 1, kMifareUltralightDefaultPasswords.length)),
-                const SizedBox(height: 4),
-                LinearProgressIndicator(
-                    value: (dictionaryIndex + 1) /
-                        kMifareUltralightDefaultPasswords.length),
-              ] else
+              if (dictionaryRunning)
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(localizations.ultralight_analysis_dictionary_running(
+                      dictionaryIndex + 1, candidateTotal)),
+                  const SizedBox(height: 4),
+                  LinearProgressIndicator(
+                      value: candidateTotal == 0
+                          ? null
+                          : (dictionaryIndex + 1) / candidateTotal),
+                ])
+              else ...[
+                if (ulDictionaries.isNotEmpty) ...[
+                  DropdownButton<String>(
+                    isExpanded: true,
+                    value: selectedDictionaryId ?? '',
+                    hint: Text(localizations.ultralight_analysis_dictionary_hint),
+                    items: [
+                      DropdownMenuItem<String>(
+                        value: '',
+                        child:
+                            Text(localizations.ultralight_analysis_builtin_only),
+                      ),
+                      for (final d in ulDictionaries)
+                        DropdownMenuItem<String>(
+                          value: d.id,
+                          child: Text(
+                              '${d.name} (${d.keys.length} keys)'),
+                        ),
+                    ],
+                    onChanged: (id) {
+                      // The '' sentinel maps back to null (built-ins only).
+                      onDictionaryChanged(id == '' ? null : id);
+                    },
+                  ),
+                  const SizedBox(height: 4),
+                ],
                 OutlinedButton.icon(
-                  onPressed: onTryDefaultPasswords,
+                  onPressed: onTryPasswords,
                   icon: const Icon(Icons.try_sms_star_outlined),
-                  label: Text(localizations.ultralight_analysis_try_defaults),
+                  label: Text(localizations.ultralight_analysis_try_passwords),
                 ),
+              ],
             ],
             if (showUnlock) ...[
               const SizedBox(height: 8),

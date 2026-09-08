@@ -694,6 +694,40 @@ class _HfSniffingMenuState extends State<HfSniffingMenu> {
                               ? '${request.keyType} block ${request.block}'
                               : request.keyType)
                           .join(', ')),
+              if (summary.ultralightAuths.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .tertiaryContainer
+                        .withValues(alpha: 0.35),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        localizations.hf_sniff_ul_pwd_recovered,
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleSmall
+                            ?.copyWith(fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 4),
+                      for (final auth in summary.ultralightAuths)
+                        Text(
+                          auth.packHex == null
+                              ? 'PWD = ${auth.pwdHex}'
+                              : 'PWD = ${auth.pwdHex}   PACK = ${auth.packHex}',
+                          style: const TextStyle(
+                              fontFeatures: [FontFeature.tabularFigures()]),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
               if (summary.aids.isNotEmpty)
                 _infoRow(localizations.hf_sniff_aids, summary.aids.join('\n')),
               if (summary.atcLabel != null)

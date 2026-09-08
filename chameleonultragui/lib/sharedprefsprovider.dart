@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:chameleonultragui/helpers/colors.dart' as colors;
 import 'package:chameleonultragui/helpers/definitions.dart';
 import 'package:chameleonultragui/helpers/general.dart';
+import 'package:chameleonultragui/helpers/mifare_ultralight/security.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
@@ -485,6 +486,31 @@ class SharedPreferencesProvider extends ChangeNotifier {
       }
     }
     return output;
+  }
+
+  /// Dictionaries holding 4-byte keys (MIFARE Ultralight PWD / T55xx).
+  ///
+  /// On first use, seeds a default "Mifare Ultralight" dictionary with the
+  /// well-known factory/vendor passwords so the user always has an editable
+  /// starting point (mirrors the MIFARE Classic default-key handling). The
+  /// returned dictionaries are stored with the others and can be edited /
+  /// extended in the saved-cards dictionary manager.
+  List<Dictionary> getMifareUltralightDictionaries() {
+    var dicts = getDictionaries(keyLength: 8);
+    if (dicts.isEmpty) {
+      // Seed once: known UL/NTAG PWDs (4 bytes -> 8 hex chars). Append to
+      // any existing dictionaries (e.g. MIFARE Classic) - never replace.
+      final seed = Dictionary.fromString(
+        kMifareUltralightDefaultPasswords.join('\n'),
+        name: 'Mifare Ultralight',
+        color: Colors.deepOrange,
+      );
+      final all = getDictionaries();
+      all.add(seed);
+      setDictionaries(all);
+      dicts = [seed];
+    }
+    return dicts;
   }
 
   void setDictionaries(List<Dictionary> dictionaries) {
