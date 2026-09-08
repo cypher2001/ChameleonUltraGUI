@@ -3,6 +3,7 @@ import 'package:chameleonultragui/gui/component/error_message.dart';
 import 'package:chameleonultragui/gui/menu/pages/dump_editor.dart';
 import 'package:chameleonultragui/gui/page/read_card.dart';
 import 'package:chameleonultragui/helpers/general.dart';
+import 'package:chameleonultragui/helpers/definitions.dart';
 import 'package:chameleonultragui/helpers/mifare_ultralight/general.dart';
 import 'package:chameleonultragui/helpers/mifare_ultralight/security.dart';
 import 'package:chameleonultragui/helpers/validators.dart';
@@ -43,8 +44,16 @@ class CardReaderState extends State<MifareUltralightHelper> {
   double progress = -1;
 
   /// Result of the read-only security configuration analysis (method 1+2).
-  /// Populated after every successful read; drives the leak-recovery panel.
+  /// Null means the config area could not be read without a key (read
+  /// protection active), the tag has no password config (plain UL / UL-C),
+  /// or the analysis was skipped.
   MifareUltralightSecurity? security;
+
+  /// Page indices that returned no data during the last keyless read.
+  /// Non-empty means the keyless dump is incomplete: those pages are either
+  /// read-protected (password required) or beyond the configured AUTH0
+  /// boundary. The save-state panel reports them.
+  List<int> unreadablePages = [];
 
   /// Whether the last completed read authenticated with a user-supplied key.
   bool lastReadUsedPassword = false;
@@ -55,6 +64,7 @@ class CardReaderState extends State<MifareUltralightHelper> {
     Uint8List? pack;
     setState(() {
       cardData = [];
+      unreadablePages = [];
       error = "";
       state = MifareUltralightState.read;
     });
@@ -77,10 +87,16 @@ class CardReaderState extends State<MifareUltralightHelper> {
 
       Uint8List pageData = await appState.communicator!
           .send14ARaw(Uint8List.fromList([0x30, page]));
-      if (pageData.isNotEmpty) {
+      if (pageData.length >= 4) {
         cardData.add(Uint8List.fromList(pageData.slice(0, 4).toList()));
       } else {
+        // Empty / NACK response: page is read-protected (no key), not
+        // present, or the read genuinely failed. Record it so the UI can
+        // tell the user the dump is incomplete.
         cardData.add(Uint8List(0));
+        if (!withPassword) {
+          unreadablePages.add(page);
+        }
       }
 
       setState(() {
@@ -282,17 +298,18 @@ class CardReaderState extends State<MifareUltralightHelper> {
         if (state == MifareUltralightState.save)
           Center(
               child: Column(children: [
-            // Security configuration analysis (method 1+2): report what the
-            // read revealed about password protection, and when the PWD page
-            // was readable without a key, offer one-tap unlock.
-            if (security != null) ...[
-              const SizedBox(height: 8),
-              _SecurityAnalysisPanel(
-                  security: security!,
-                  readWithPassword: lastReadUsedPassword,
-                  onUnlock: readCardWithRecoveredPassword),
-              const SizedBox(height: 8),
-            ],
+            // Security/coverage analysis (method 1+2): always shown after a
+            // read so the user learns (a) whether the keyless dump is
+            // complete, and (b) what password protection the tag has - and
+            // gets a one-tap unlock when the PWD page was readable.
+            const SizedBox(height: 8),
+            _SecurityAnalysisPanel(
+                type: widget.hfInfo.type,
+                security: security,
+                unreadablePages: unreadablePages,
+                readWithPassword: lastReadUsedPassword,
+                onUnlock: readCardWithRecoveredPassword),
+            const SizedBox(height: 8),
             Wrap(
                 alignment: WrapAlignment.center,
                 spacing: 8,
@@ -356,16 +373,27 @@ class CardReaderState extends State<MifareUltralightHelper> {
 }
 }
 
-/// Shows what the keyless read revealed about the tag's password
-/// configuration (AUTH0 / PROT / CFGLCK) and, when the PWD page was readable
-/// in the clear, offers to unlock the full memory with the recovered key.
+/// Reports, after a read, whether the dump is complete and what password
+/// protection the tag has. Always visible in the save state.
+///
+/// - Plain Ultralight: no password system at all - every page is readable,
+///   the dump is complete by construction.
+/// - Ultralight C: 3DES authentication - the PWD-page model does not apply.
+/// - EV1/NTAG with readable config: AUTH0 / PROT / CFGLCK decoded; when the
+///   PWD page was readable without a key, offers one-tap unlock.
+/// - EV1/NTAG with read-protected config: reports that pages could not be
+///   read and a password (or sniffing) is required.
 class _SecurityAnalysisPanel extends StatelessWidget {
-  final MifareUltralightSecurity security;
+  final TagType type;
+  final MifareUltralightSecurity? security;
+  final List<int> unreadablePages;
   final bool readWithPassword;
   final Future<void> Function() onUnlock;
 
   const _SecurityAnalysisPanel({
+    required this.type,
     required this.security,
+    required this.unreadablePages,
     required this.readWithPassword,
     required this.onUnlock,
   });
@@ -375,17 +403,82 @@ class _SecurityAnalysisPanel extends StatelessWidget {
     final localizations = AppLocalizations.of(context)!;
     final appState = Provider.of<ChameleonGUIState>(context, listen: false);
 
-    // A password read already implies the config pages are readable, so a
-    // recovered key is only newsworthy when we did *not* authenticate.
-    final leaked =
-        security.passwordLeaked && !readWithPassword;
-    final protectedFrom = security.protectedFrom;
+    // Coverage: which pages of the nominal map came back empty.
+    final totalPages = mfUltralightGetPagesCount(type);
+    final readableCount = totalPages - unreadablePages.length;
+    final incomplete = !readWithPassword && unreadablePages.isNotEmpty;
 
-    final String status = leaked
-        ? localizations.ultralight_analysis_leaked
-        : protectedFrom == null
-            ? localizations.ultralight_analysis_open
-            : localizations.ultralight_analysis_protected(protectedFrom);
+    // Does this tag type even have the 0x1B password scheme?
+    final hasPasswordConfig =
+        MifareUltralightSecurity.configStartPage(type) != null;
+    final bool isPlainUl = type == TagType.ultralight;
+
+    String status;
+    String? detail;
+    IconData icon;
+    var showUnlock = false;
+    String? pwdValue;
+    String? packValue;
+
+    if (!hasPasswordConfig) {
+      // Plain UL / UL-C: no PWD-page analysis applies.
+      icon = Icons.info_outline;
+      if (isPlainUl) {
+        status = localizations.ultralight_analysis_no_password_system;
+      } else {
+        // Ultralight C uses 3DES, not the EV1/NTAG PWD scheme.
+        status = localizations.ultralight_analysis_ulc_3des;
+      }
+      detail = incomplete
+          ? localizations.ultralight_analysis_pages_missing(
+              readableCount, totalPages)
+          : null;
+    } else if (security == null) {
+      // Config pages could not be read without a key: read protection on.
+      icon = Icons.lock_outline;
+      status = localizations.ultralight_analysis_config_read_protected;
+      if (incomplete) {
+        detail = localizations.ultralight_analysis_pages_missing(
+            readableCount, totalPages);
+      }
+    } else {
+      // security != null here (null handled in the branch above).
+      final sec = security!;
+      final leaked = sec.passwordLeaked && !readWithPassword;
+      final protectedFrom = sec.protectedFrom;
+      icon = leaked
+          ? Icons.key
+          : protectedFrom == null
+              ? Icons.lock_open
+              : Icons.lock_outline;
+
+      status = leaked
+          ? localizations.ultralight_analysis_leaked
+          : protectedFrom == null
+              ? localizations.ultralight_analysis_open
+              : localizations.ultralight_analysis_protected(protectedFrom);
+
+      if (incomplete) {
+        detail = localizations.ultralight_analysis_pages_missing(
+            readableCount, totalPages);
+      }
+      showUnlock = leaked;
+      pwdValue = sec.leakedPasswordHex;
+      packValue = sec.leakedPackHex;
+    }
+
+    final subtitle = (incomplete && detail != null)
+        ? detail
+        : (!readWithPassword &&
+                !incomplete &&
+                !hasPasswordConfig &&
+                isPlainUl)
+            ? localizations.ultralight_analysis_all_read(totalPages)
+            : detail;
+
+    final sec = security;
+    final configLocked = sec?.configLocked ?? false;
+    final authLimit = sec?.authLimit ?? 0;
 
     return Card(
       child: Padding(
@@ -395,11 +488,7 @@ class _SecurityAnalysisPanel extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Row(children: [
-              Icon(leaked
-                  ? Icons.key
-                  : protectedFrom == null
-                      ? Icons.lock_open
-                      : Icons.lock_outline),
+              Icon(icon),
               const SizedBox(width: 8),
               Expanded(
                   child: Text(localizations.ultralight_security_analysis,
@@ -407,19 +496,19 @@ class _SecurityAnalysisPanel extends StatelessWidget {
             ]),
             const SizedBox(height: 8),
             Text(status),
-            const SizedBox(height: 4),
-            if (security.configLocked)
+            if (subtitle != null) ...[
+              const SizedBox(height: 4),
+              Text(subtitle),
+            ],
+            if (configLocked)
               Text(localizations.ultralight_analysis_config_locked),
-            if (security.authLimit > 0)
-              Text(localizations
-                  .ultralight_analysis_auth_limit(security.authLimit)),
-            if (leaked) ...[
+            if (authLimit > 0)
+              Text(localizations.ultralight_analysis_auth_limit(authLimit)),
+            if (showUnlock) ...[
               const SizedBox(height: 8),
-              Text(localizations.ultralight_analysis_pwd_value(
-                  security.leakedPasswordHex ?? "")),
-              if (security.leakedPackHex != null)
-                Text(localizations.ultralight_analysis_pack_value(
-                    security.leakedPackHex!)),
+              Text(localizations.ultralight_analysis_pwd_value(pwdValue ?? "")),
+              if (packValue != null)
+                Text(localizations.ultralight_analysis_pack_value(packValue)),
               const SizedBox(height: 4),
               ElevatedButton.icon(
                 onPressed: onUnlock,

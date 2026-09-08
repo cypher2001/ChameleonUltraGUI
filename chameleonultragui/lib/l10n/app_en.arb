@@ -581,5 +581,10 @@
   "ultralight_analysis_pwd_value": "Recovered password (PWD): {pwd}",
   "ultralight_analysis_pack_value": "Recovered PACK: {pack}",
   "ultralight_analysis_unlock": "Unlock & read with recovered password",
+  "ultralight_analysis_no_password_system": "This tag type has no password system: a keyless read returns the complete memory.",
+  "ultralight_analysis_ulc_3des": "Ultralight C uses 3DES authentication, not the EV1/NTAG password scheme. Password analysis does not apply.",
+  "ultralight_analysis_config_read_protected": "Configuration pages require a password to read (AUTH0/PROT set). A keyless read cannot see the protected area or the config.",
+  "ultralight_analysis_pages_missing": "Only {read} of {total} pages were readable without a key - the rest are protected.",
+  "ultralight_analysis_all_read": "All {total} pages were read successfully - the dump is complete.",
   "hardnested_cancelled": "Hardnested attack cancelled"
 }
