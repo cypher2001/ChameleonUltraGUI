@@ -9,6 +9,7 @@ import 'package:chameleonultragui/helpers/mifare_ultralight/pwdgen.dart';
 import 'package:chameleonultragui/helpers/mifare_ultralight/security.dart';
 import 'package:chameleonultragui/helpers/validators.dart';
 import 'package:chameleonultragui/main.dart';
+import 'package:chameleonultragui/gui/menu/tools/hf_sniffing.dart';
 import 'package:chameleonultragui/sharedprefsprovider.dart';
 import 'package:collection/collection.dart';
 import 'package:file_picker/file_picker.dart';
@@ -61,6 +62,10 @@ class CardReaderState extends State<MifareUltralightHelper> {
 
   /// True while a password sweep (defaults / dictionary / pwdgen) runs.
   bool dictionaryRunning = false;
+
+  /// True once a sweep has run to exhaustion without finding the password -
+  /// switches the panel into "next step: sniff a real reader" guidance.
+  bool dictionaryFailed = false;
 
   /// Index into the merged candidate list for the sweep progress.
   int dictionaryIndex = 0;
@@ -170,6 +175,7 @@ class CardReaderState extends State<MifareUltralightHelper> {
       state = MifareUltralightState.save;
       security = sec;
       lastReadUsedPassword = withPassword;
+      dictionaryFailed = false;
       // Refresh the editable 4-byte dictionary list for the sweep dropdown.
       ulDictionaries = appState.sharedPreferencesProvider
           .getMifareUltralightDictionaries();
@@ -240,6 +246,7 @@ class CardReaderState extends State<MifareUltralightHelper> {
 
     setState(() {
       dictionaryRunning = true;
+      dictionaryFailed = false;
       dictionaryIndex = 0;
       error = "";
     });
@@ -268,6 +275,7 @@ class CardReaderState extends State<MifareUltralightHelper> {
       final localizations = AppLocalizations.of(context);
       setState(() {
         dictionaryRunning = false;
+        dictionaryFailed = true;
         error = localizations?.ultralight_dictionary_failed ??
             "dictionary_failed";
       });
@@ -413,6 +421,7 @@ class CardReaderState extends State<MifareUltralightHelper> {
                 unreadablePages: unreadablePages,
                 readWithPassword: lastReadUsedPassword,
                 dictionaryRunning: dictionaryRunning,
+                dictionaryFailed: dictionaryFailed,
                 dictionaryIndex: dictionaryIndex,
                 candidateTotal: mifareUltralightMergeCandidates(
                   widget.hfInfo.uid.replaceAll(' ', ''),
@@ -525,6 +534,7 @@ class _SecurityAnalysisPanel extends StatelessWidget {
   final List<int> unreadablePages;
   final bool readWithPassword;
   final bool dictionaryRunning;
+  final bool dictionaryFailed;
   final int dictionaryIndex;
   final int candidateTotal;
   final List<Dictionary> ulDictionaries;
@@ -540,6 +550,7 @@ class _SecurityAnalysisPanel extends StatelessWidget {
     required this.unreadablePages,
     required this.readWithPassword,
     required this.dictionaryRunning,
+    required this.dictionaryFailed,
     required this.dictionaryIndex,
     required this.candidateTotal,
     required this.ulDictionaries,
@@ -712,6 +723,40 @@ class _SecurityAnalysisPanel extends StatelessWidget {
                           ))
                       .toList()),
             ],
+            // Recovery path (enhancement 3): on a password-capable tag we
+            // cannot read without a key, spell out the three escalating
+            // steps so the operator always knows where they are.
+            if (hasPasswordConfig && !readWithPassword && !showUnlock) ...[
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .surfaceContainerHighest
+                      .withValues(alpha: 0.4),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      localizations.ultralight_analysis_recovery_path,
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleSmall
+                          ?.copyWith(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(localizations.ultralight_analysis_step_pwdgen),
+                    const SizedBox(height: 2),
+                    Text(localizations.ultralight_analysis_step_dictionary),
+                    const SizedBox(height: 2),
+                    Text(localizations.ultralight_analysis_step_sniff),
+                  ],
+                ),
+              ),
+            ],
             // Password sweep (methods 2+3): pwdgen from UID + defaults + the
             // selected user dictionary - for password-capable tags whose config
             // could not be read without a key.
@@ -759,6 +804,44 @@ class _SecurityAnalysisPanel extends StatelessWidget {
                   label: Text(localizations.ultralight_analysis_try_passwords),
                 ),
               ],
+            ],
+            // Enhancement 1: sweep exhausted -> guide to the one attack that
+            // actually works on a custom-PWD tag (sniff a legitimate read).
+            if (hasPasswordConfig && dictionaryFailed && !readWithPassword) ...[
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .errorContainer
+                      .withValues(alpha: 0.35),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      localizations.ultralight_analysis_custom_pwd,
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleSmall
+                          ?.copyWith(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(localizations.ultralight_analysis_sniff_explain),
+                    const SizedBox(height: 8),
+                    ElevatedButton.icon(
+                      onPressed: () => showDialog(
+                        context: context,
+                        builder: (_) => const HfSniffingMenu(),
+                      ),
+                      icon: const Icon(Icons.radar),
+                      label: Text(localizations.ultralight_open_sniffer),
+                    ),
+                  ],
+                ),
+              ),
             ],
             if (showUnlock) ...[
               const SizedBox(height: 8),

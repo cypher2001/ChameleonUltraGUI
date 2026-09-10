@@ -724,6 +724,33 @@ class _HfSniffingMenuState extends State<HfSniffingMenu> {
                           style: const TextStyle(
                               fontFeatures: [FontFeature.tabularFigures()]),
                         ),
+                      const SizedBox(height: 6),
+                      Text(
+                        localizations.hf_sniff_ul_copy_hint,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                                visualDensity: VisualDensity.compact),
+                            onPressed: () async {
+                              await Clipboard.setData(ClipboardData(
+                                  text: summary.ultralightAuths.first.pwdHex));
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                      content: Text(
+                                          localizations.hf_sniff_ul_copied)),
+                                );
+                              }
+                            },
+                            icon: const Icon(Icons.copy, size: 16),
+                            label: Text(localizations.hf_sniff_ul_copy_pwd),
+                          ),
+                        ],
+                      ),
                     ],
                   ),
                 ),
